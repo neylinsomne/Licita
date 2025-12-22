@@ -1,0 +1,27 @@
+FROM python:3.10-slim
+
+# Instalar dependencias del sistema (necesarias para cv2 y compiladores)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Instalar librerías de Python
+# torch_geometric es clave para el Grafo Heterogéneo
+RUN pip install --no-cache-dir \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    torch_geometric \
+    transformers \
+    pymupdf \
+    psycopg2-binary \
+    pgvector \
+    openai \
+    scikit-learn \
+    networkx \
+    numpy
+
+COPY . .
+
+CMD ["python", "pipeline_licitaciones.py"]
