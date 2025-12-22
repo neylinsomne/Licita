@@ -34,3 +34,4 @@ class LicitacionHabilitantes(BaseModel):
     juridico: List[RequisitoItem] = Field(default_factory=list)
     financiero: List[RequisitoItem] = Field(default_factory=list)
     experiencia: Optional[ExperienciaContainer] = None
+

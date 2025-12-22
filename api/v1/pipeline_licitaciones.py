@@ -144,23 +144,21 @@ if __name__ == "__main__":
     # Lic 3: Video Vigilancia (Similar a A)
     chunks_lic_C = process_pdf("dummy.pdf", doc_id="lic_vigilancia") 
 
-    # B. Construir Grafos
+
     print("2. Construyendo Grafos Heterogéneos...")
     graph_A = build_hetero_graph(chunks_lic_A)
     graph_B = build_hetero_graph(chunks_lic_B)
     graph_C = build_hetero_graph(chunks_lic_C)
 
-    # C. Inicializar Modelo
+   
     model = LicitacionGNN(hidden_channels=64, out_channels=32, metadata=graph_A.metadata())
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     criterion = ContrastiveLoss()
 
-    # D. Loop de Entrenamiento (Simulado)
+    
     print("3. Entrenando con Contrastive Loss...")
     model.train()
-    
-    # Forward Pass
-    # Obtenemos el vector latente final de cada licitación
+
     vec_A = model(graph_A.x_dict, graph_A.edge_index_dict)
     vec_B = model(graph_B.x_dict, graph_B.edge_index_dict)
     vec_C = model(graph_C.x_dict, graph_C.edge_index_dict)

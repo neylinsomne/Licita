@@ -11,7 +11,7 @@ from ai_schemas import TaxonomyPrediction, LicitacionHabilitantes
 
 # CONFIG
 client = OpenAI(api_key="TU_API_KEY_AQUI")
-print("⏳ Cargando modelo de vectores...")
+print(" Cargando modelo de vectores...")
 embedder = SentenceTransformer('all-MiniLM-L6-v2') 
 
 class MasterPipeline:
@@ -19,11 +19,11 @@ class MasterPipeline:
         self.pdf_parser = PDFResilientParser()
 
     def run_ingest(self, pdf_path, lic_id_interno):
-        print(f"\n🚀 PROCESANDO: {lic_id_interno} | Archivo: {pdf_path}")
+        print(f"\n PROCESANDO: {lic_id_interno} | Archivo: {pdf_path}")
 
         # 1. PARSING PDF
         chunks = self.pdf_parser.process(pdf_path)
-        print(f"📄 Secciones detectadas: {len(chunks)}")
+        print(f" Secciones detectadas: {len(chunks)}")
 
         # 2. INFERENCIA TAXONOMÍA (Resumen)
         summary_text = " ".join([c['text'] for c in chunks[:3]])[:3000]
@@ -51,7 +51,7 @@ class MasterPipeline:
             
             # Solo procesamos si es una categoría relevante
             if cat in ["FINANCIERO", "JURIDICO", "EXPERIENCIA"]:
-                print(f"   🔍 Analizando sección: {chunk['title']} ({cat})")
+                print(f"   Analizando sección: {chunk['title']} ({cat})")
                 extracted = self._extract_requirements_llm(chunk['text'], cat)
                 
                 if extracted:
@@ -81,7 +81,7 @@ class MasterPipeline:
 
         # 5. GUARDAR
         self._save_to_postgres(lic_id_interno, taxonomy, final_json_structure, doc_vector)
-        print(f"✅ Licitación {lic_id_interno} guardada y vectorizada.")
+        print(f" Licitación {lic_id_interno} guardada y vectorizada.")
 
     # --- MÉTODOS DE APOYO ---
     def _vectorize_list(self, req_list):
@@ -91,8 +91,7 @@ class MasterPipeline:
         processed = []
         for req in req_list:
             item = req.model_dump()
-            # VECTORIZACIÓN DEL CONCEPTO AQUÍ
-            # Ej: vector("Indice de Liquidez")
+            #
             vector = embedder.encode(item["concepto"]).tolist()
             item["vector_concepto"] = vector 
             processed.append(item)

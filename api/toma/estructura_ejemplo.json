@@ -5,7 +5,6 @@
         "fecha_procesamiento": "2025-10-20T10:00:00Z"
     },
     "requisitos_habilitantes": {
-        // 1. CAPACIDAD JURÍDICA (Binario: Cumple / No Cumple)
         "juridico": [
             {
                 "id_req": "JUR-01",
@@ -24,7 +23,7 @@
                 "fuente_texto": "No haber sido sancionado por el SECOP en los últimos 2 años."
             }
         ],
-        // 2. CAPACIDAD FINANCIERA (Numérico: Comparación directa)
+        // CAPACIDAD FINANCIERA (Numérico: Comparación directa)
         "financiero": [
             {
                 "id_req": "FIN-01",
@@ -46,11 +45,10 @@
                 "concepto": "Patrimonio",
                 "operador": ">=",
                 "valor_requerido": 500,
-                "unidad": "SMMLV", // Ojo: Tu sistema deberá convertir SMMLV a Pesos del año actual
+                "unidad": "SMMLV",
                 "valor_normalizado_cop": 650000000 // Valor calculado
             }
         ],
-        // 3. EXPERIENCIA (RUP) (Complejo: Listas y Códigos)
         "experiencia": {
             "regla_general": "Acreditar experiencia en contratos terminados",
             "filtros": [
@@ -62,7 +60,7 @@
                         "43210000",
                         "43220000"
                     ],
-                    "nivel_coincidencia": "tercer_nivel" // Clase/Familia
+                    "nivel_coincidencia": "tercer_nivel"
                 },
                 {
                     "id_req": "EXP-02",
@@ -75,7 +73,7 @@
                     "id_req": "EXP-03",
                     "concepto": "Número de Contratos",
                     "operador": "<=",
-                    "valor_requerido": 3, // "Máximo en 3 contratos"
+                    "valor_requerido": 3,
                     "unidad": "cantidad"
                 }
             ]

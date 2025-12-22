@@ -1,0 +1,35 @@
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. Instalar dependencias del sistema (git es necesario para algunas libs de python)
+WORKDIR /app
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# 2. ESTRATEGIA DE INSTALACIÓN SEGURA
+# Paso A: Actualizar pip
+RUN pip install --upgrade pip
+
+# Paso B: Instalar PyTorch NUEVO explícitamente primero
+# Esto garantiza que cuando instalemos lo demás, Torch 2.3+ ya exista.
+RUN pip install "torch>=2.3.0" "torchvision>=0.18.0" --index-url https://download.pytorch.org/whl/cu121 --upgrade
+
+# Paso C: Instalar el resto de librerías (Transformers, Timm, etc.)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. Copiar scripts
+COPY descargar_modelo.py .
+
+# 4. Descargar modelo (Ahora sí funcionará porque Transformers y Torch son compatibles)
+RUN python descargar_modelo.py
+
+COPY ai_engine.py .
+
+CMD ["python", "ai_engine.py"]
