@@ -7,7 +7,6 @@ from PIL import Image, ImageDraw, ImageFont
 MODEL_ID = "microsoft/Florence-2-large"
 
 # CORRECCIÓN 1: Usar la variable de entorno o fallback a local
-# Esto asegura que lea exactamente donde 'descargar_modelo.py' guardó los archivos
 MODEL_CACHE_DIR = os.getenv("HF_HOME", "./model_cache")
 
 # Variables Globales
@@ -25,21 +24,22 @@ def _init_model():
     print("-" * 30)
     if torch.cuda.is_available():
         _DEVICE = "cuda"
-        print(f"✅ MOTOR IA: GPU Detectada: {torch.cuda.get_device_name(0)}")
+        print(f" MOTOR IA: GPU Detectada: {torch.cuda.get_device_name(0)}")
         dtype = torch.float16 
     else:
         _DEVICE = "cpu"
         dtype = torch.float32
-        print("⚠️ MOTOR IA: Usando CPU (Lento).")
+        print(" MOTOR IA: Usando CPU (Lento).")
     print("-" * 30)
 
-    print(f"⏳ Cargando modelo desde: {MODEL_CACHE_DIR}...")
+    print(f" Cargando modelo desde: {MODEL_CACHE_DIR}...")
     try:
         _MODEL = AutoModelForCausalLM.from_pretrained(
             MODEL_ID, 
             trust_remote_code=True, 
             torch_dtype=dtype,
-            cache_dir=MODEL_CACHE_DIR
+            cache_dir=MODEL_CACHE_DIR,
+            attn_implementation="eager"
         ).to(_DEVICE)
         
         _PROCESSOR = AutoProcessor.from_pretrained(
@@ -91,18 +91,17 @@ def run_ocr_inference(image_path, task="<OCR>"):
         return {"error": str(e)}
 
 # --- CORRECCIÓN 2: Bloque de Ejecución Principal ---
-# Esto evita que el Docker se cierre instantáneamente y prueba que todo funcione.
 if __name__ == "__main__":
     print("🏁 Iniciando Test de Integridad del Contenedor...")
     
     # 1. Forzamos la carga del modelo
     _init_model()
 
-    # 2. Generamos una imagen dummy para probar (así no necesitas montar volúmenes para probar)
+    # 2. Generamos una imagen dummy para probar
     print("🖼️ Generando imagen de prueba interna...")
     img = Image.new('RGB', (200, 100), color = (255, 255, 255))
     d = ImageDraw.Draw(img)
-    d.text((10,10), "HOLA MUNDO", fill=(0,0,0)) # Escribe texto negro
+    d.text((10,10), "HOLA MUNDO", fill=(0,0,0)) 
     img.save("test_interno.jpg")
 
     # 3. Corremos inferencia

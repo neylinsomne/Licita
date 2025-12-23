@@ -1,33 +1,35 @@
-FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+# CAMBIO CLAVE: Usamos la versión 'devel' que trae compiladores (nvcc)
+# Esto permite que PyTorch compile el soporte para tu 5060 Ti al vuelo.
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Instalar dependencias del sistema (git es necesario para algunas libs de python)
+# 1. Instalar dependencias del sistema
 WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
     git \
     build-essential \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
-# 2. ESTRATEGIA DE INSTALACIÓN SEGURA
-# Paso A: Actualizar pip
+# 2. Actualizar pip
 RUN pip install --upgrade pip
 
-# Paso B: Instalar PyTorch NUEVO explícitamente primero
-# Esto garantiza que cuando instalemos lo demás, Torch 2.3+ ya exista.
-RUN pip install "torch>=2.3.0" "torchvision>=0.18.0" --index-url https://download.pytorch.org/whl/cu121 --upgrade
-
-# Paso C: Instalar el resto de librerías (Transformers, Timm, etc.)
+# 3. Instalación de librerías
+# Nota: Ya no reinstalamos torch porque la imagen base trae el correcto (2.3.0)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 3. Copiar scripts
-COPY descargar_modelo.py .
+# 4. Configurar variables de entorno para forzar compatibilidad
+# Le decimos a PyTorch: "Si no conoces mi tarjeta, trátala como una Ampere (3090) o Ada (4090)"
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+ENV TORCH_USE_CUDA_DSA=1
 
-# 4. Descargar modelo (Ahora sí funcionará porque Transformers y Torch son compatibles)
+# 5. Scripts
+COPY descargar_modelo.py .
 RUN python descargar_modelo.py
 
 COPY ai_engine.py .

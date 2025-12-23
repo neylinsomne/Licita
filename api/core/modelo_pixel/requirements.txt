@@ -1,12 +1,12 @@
-# Núcleo IA (Orden crítico)
-torch>=2.3.0
-torchvision>=0.18.0
-
+# torch>=2.3.0  <-- llega hasta sm_90
+# torchvision>=0.18.0 <-- llega hasta sm_90
 # Librerías para Florence-2
+
 transformers>=4.41.2
 pillow
 einops
 timm
 accelerate
 scipy
-# flash_attn  
+# flash_attn se recomienda comentar si da problemas, pero en 'devel' podría funcionar.
+# Por seguridad, mantenlo comentado por ahora.
