@@ -1,0 +1,53 @@
+.env
+model_cache
+# --- 1. DATOS PESADOS DE IA (Vital para no bloquear Github) ---
+data_models/
+model_cache/
+hf_cache/
+downloads/
+*.pth
+*.pt
+*.bin
+*.onnx
+*.safetensors
+
+# --- 2. BASE DE DATOS ---
+postgres_data/
+
+# --- 3. DEPENDENCIAS Y BINARIOS ---
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Node/Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+
+# --- 4. SEGURIDAD (Nunca subir esto) ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- 5. ARCHIVOS TEMPORALES GENERADOS ---
+*.log
+temp_*
+debug_*.jpg
+debug_*.png
+# Ignorar PDFs de prueba (opcional, si descargas muchos)
+*.pdf
+# Pero permitir un pdf de ejemplo si quieres
+!test.pdf
+
+# --- 6. IDE Y SISTEMA OPERATIVO ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

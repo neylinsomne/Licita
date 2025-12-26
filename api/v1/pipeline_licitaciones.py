@@ -72,7 +72,7 @@ def build_hetero_graph(chunks_data):
         data['concepto'].x = concept_embeddings
     else:
          # Fallback si no hay conceptos
-        data['concepto'].x = torch.zeros((1, 384))
+        data['concepto'].x = torch.zeros((1, 768))
 
     # -- ARISTAS (EDGES) --
     # Edge 1: Licitacion -> Tiene -> Chunk

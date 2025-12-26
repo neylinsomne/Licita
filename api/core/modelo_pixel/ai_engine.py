@@ -1,113 +1,114 @@
-import os
-import torch
+from PIL import Image
 from transformers import AutoProcessor, AutoModelForCausalLM
-from PIL import Image, ImageDraw, ImageFont
+import torch
+import os
 
-# --- CONFIGURACIÓN GLOBAL ---
-MODEL_ID = "microsoft/Florence-2-large"
+# --- CONFIGURACIÓN ---
+device = "cuda" if torch.cuda.is_available() else "cpu"
+dtype = torch.float16 if device == "cuda" else torch.float32
 
-# CORRECCIÓN 1: Usar la variable de entorno o fallback a local
-MODEL_CACHE_DIR = os.getenv("HF_HOME", "./model_cache")
+model_id = "microsoft/Florence-2-large"
 
-# Variables Globales
-_MODEL = None
-_PROCESSOR = None
-_DEVICE = None
+print(f"--- FLORENCE ENGINE INIT ---")
+print(f"Device: {device}")
+print(f"Dtype objetivo: {dtype}")
 
-def _init_model():
-    """Inicializa el modelo solo si no está cargado."""
-    global _MODEL, _PROCESSOR, _DEVICE
-    
-    if _MODEL is not None:
-        return # Ya está cargado
+try:
+    # Cargamos con 'eager' para evitar errores de SDPA
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, 
+        trust_remote_code=True,
+        dtype=dtype,
+        attn_implementation="eager"
+    ).to(device)
+    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    print("✅ Modelo cargado.")
+except Exception as e:
+    print(f"❌ ERROR CARGA MODELO: {e}")
+    model = None
 
-    print("-" * 30)
-    if torch.cuda.is_available():
-        _DEVICE = "cuda"
-        print(f" MOTOR IA: GPU Detectada: {torch.cuda.get_device_name(0)}")
-        dtype = torch.float16 
-    else:
-        _DEVICE = "cpu"
-        dtype = torch.float32
-        print(" MOTOR IA: Usando CPU (Lento).")
-    print("-" * 30)
+def analizar_imagen_con_florence(image_path_or_obj, task_prompt="<MORE_DETAILED_CAPTION>", text_input=None):
+    if model is None: return {"error": "Model not loaded"}
 
-    print(f" Cargando modelo desde: {MODEL_CACHE_DIR}...")
+    print("--- INICIO DEBUG FLORENCE ---")
     try:
-        _MODEL = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID, 
-            trust_remote_code=True, 
-            torch_dtype=dtype,
-            cache_dir=MODEL_CACHE_DIR,
-            attn_implementation="eager"
-        ).to(_DEVICE)
+        # 1. IMAGEN
+        if isinstance(image_path_or_obj, str):
+            image = Image.open(image_path_or_obj).convert("RGB")
+        else:
+            image = image_path_or_obj.convert("RGB")
         
-        _PROCESSOR = AutoProcessor.from_pretrained(
-            MODEL_ID, 
-            trust_remote_code=True, 
-            cache_dir=MODEL_CACHE_DIR
-        )
-        print("🚀 Modelo cargado y listo en memoria.")
-    except Exception as e:
-        print(f"❌ Error fatal cargando el modelo: {e}")
-        raise e
+        print(f"1. Imagen OK: {image.size} Mode={image.mode}")
 
-def run_ocr_inference(image_path, task="<OCR>"):
-    # 1. Asegurar que el modelo esté vivo
-    if _MODEL is None:
-        _init_model()
+        # 2. PROMPT
+        prompt = task_prompt + (text_input if text_input else "")
+        print(f"2. Prompt: '{prompt}'")
 
-    if not os.path.exists(image_path):
-        return {"error": "Imagen no encontrada"}
-
-    try:
-        image = Image.open(image_path).convert("RGB")
+        # 3. PROCESSOR
+        # Importante: images=[image]
+        inputs = processor(text=prompt, images=[image], return_tensors="pt")
         
-        # Procesamiento
-        inputs = _PROCESSOR(text=task, images=image, return_tensors="pt")
-        inputs = {k: v.to(_DEVICE) for k, v in inputs.items()}
-        if _DEVICE == "cuda":
-            inputs["pixel_values"] = inputs["pixel_values"].to(torch.float16)
+        print(f"3. Keys del Processor: {inputs.keys()}")
+        
+        if "pixel_values" not in inputs:
+            print("❌ ERROR: pixel_values no existe en inputs")
+            return ""
+            
+        if inputs["pixel_values"] is None:
+            print("❌ ERROR: pixel_values es None")
+            return ""
 
-        generated_ids = _MODEL.generate(
+        # 4. TENSORES Y TIPOS (Aquí está la clave)
+        pv = inputs["pixel_values"]
+        ids = inputs["input_ids"]
+        
+        print(f"   -> Pixel Values Shape Original: {pv.shape}, Dtype: {pv.dtype}")
+        print(f"   -> Input IDs Shape Original: {ids.shape}, Dtype: {ids.dtype}")
+
+        # MOVER A GPU Y CASTEAR
+        # pixel_values debe ser float16 (si usas cuda)
+        # input_ids debe ser long (int64), NUNCA float
+        
+        inputs["pixel_values"] = pv.to(device, dtype)
+        inputs["input_ids"] = ids.to(device) # IDs se quedan como enteros (Long)
+
+        print(f"   -> PV en GPU: {inputs['pixel_values'].device}, Type: {inputs['pixel_values'].dtype}")
+        print(f"   -> IDs en GPU: {inputs['input_ids'].device}, Type: {inputs['input_ids'].dtype}")
+
+        # 5. GENERATE (El punto de quiebre)
+        print("5. Ejecutando model.generate()...")
+        
+        generated_ids = model.generate(
             input_ids=inputs["input_ids"],
             pixel_values=inputs["pixel_values"],
             max_new_tokens=1024,
-            num_beams=3,
-            do_sample=False
+            do_sample=False,
+            num_beams=1,         
+            # early_stopping=False # <--- BORRAR: No sirve con num_beams=1
         )
-
-        generated_text = _PROCESSOR.batch_decode(generated_ids, skip_special_tokens=False)[0]
         
-        parsed_answer = _PROCESSOR.post_process_generation(
+        print(f"6. Generación OK. IDs shape: {generated_ids.shape}")
+
+        # 6. DECODE
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        print(f"7. Texto Raw: {generated_text[:50]}...")
+
+        parsed_answer = processor.post_process_generation(
             generated_text, 
-            task=task, 
+            task=task_prompt, 
             image_size=(image.width, image.height)
         )
         
+        if isinstance(parsed_answer, dict) and task_prompt in parsed_answer:
+            return parsed_answer[task_prompt]
+            
         return parsed_answer
 
     except Exception as e:
-        return {"error": str(e)}
+        print(f"❌ EXCEPCIÓN EN FLORENCE: {e}")
+        import traceback
+        traceback.print_exc() # Esto nos dirá la línea exacta dentro de la librería
+        return ""
 
-# --- CORRECCIÓN 2: Bloque de Ejecución Principal ---
-if __name__ == "__main__":
-    print("🏁 Iniciando Test de Integridad del Contenedor...")
-    
-    # 1. Forzamos la carga del modelo
-    _init_model()
-
-    # 2. Generamos una imagen dummy para probar
-    print("🖼️ Generando imagen de prueba interna...")
-    img = Image.new('RGB', (200, 100), color = (255, 255, 255))
-    d = ImageDraw.Draw(img)
-    d.text((10,10), "HOLA MUNDO", fill=(0,0,0)) 
-    img.save("test_interno.jpg")
-
-    # 3. Corremos inferencia
-    print("🧠 Ejecutando inferencia de prueba...")
-    resultado = run_ocr_inference("test_interno.jpg")
-    
-    print("\nRESULTADO DE PRUEBA:")
-    print(resultado)
-    print("\n✅ El sistema está operativo. El contenedor finalizará ahora.")
+def run_ocr_inference(image, task="<MORE_DETAILED_CAPTION>"):
+    return analizar_imagen_con_florence(image, task_prompt=task)

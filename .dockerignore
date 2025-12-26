@@ -1,0 +1,15 @@
+# Ignorar carpetas pesadas de datos
+model_cache
+postgres_data
+api/core/modelo_pixel/__pycache__
+frontend/node_modules
+data_models
+.git
+.vscode
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
+temp_*

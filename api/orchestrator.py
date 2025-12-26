@@ -1,68 +1,112 @@
 import os
 import json
-import datetime
-from openai import OpenAI
-from sentence_transformers import SentenceTransformer
+import io
+import fitz  # PyMuPDF
+from PIL import Image
 
-# Adjust imports based on your folder structure
-from database.connection import get_db_connection
+# --- IMPORTACIONES ---
+from google import genai
+from google.genai import types
+from sentence_transformers import SentenceTransformer
 from api.core.pdf_utils import PDFResilientParser
-# Ensure this matches your file name (ai_schemas.py vs ai_schema.py)
-from api.core.ai_schemas import TaxonomyPrediction, LicitacionHabilitantes
+from database.connection import get_db_connection
+from api.core.modelo_pixel.ai_engine import analizar_imagen_con_florence
 
 class TenderPipeline:
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            print(" WARNING: OPENAI_API_KEY not set. LLM calls will fail.")
+            print(" WARNING: GOOGLE_API_KEY not found.")
+            self.client = None
+        else:
+            try:
+                self.client = genai.Client(api_key=api_key)
+                print(" Using Google GenAI Client (Default/Beta).")
+            except Exception as e:
+                print(f" Error init Gemini: {e}")
+                self.client = None
         
-        self.client = OpenAI(api_key=api_key)
+        self.model_name = "gemini-2.5-flash" 
+
+        print(" Loading embedding model (all-mpnet-base-v2)...")
+        try:
+            self.embedder = SentenceTransformer('all-mpnet-base-v2', device='cpu')
+            self.embedder.encode("warmup")
+            print(" Embeddings cargados y listos.")
+        except Exception as e:
+            print(f" Error crítico en Embeddings: {e}")
+            raise e
         
-        # CRITICAL FIX: Matching DB dimensions (768)
-        print("⏳ Loading embedding model (all-mpnet-base-v2)...")
-        self.embedder = SentenceTransformer('all-mpnet-base-v2') 
-        self.pdf_parser = PDFResilientParser()
+        self.parser = PDFResilientParser()
 
     def process_pdf(self, pdf_path: str, lic_id_interno: str):
-        """
-        Full Pipeline: PDF -> Layout Analysis -> LLM Extraction -> Graph Nodes -> Postgres
-        """
         print(f"\nSTARTING PIPELINE: {lic_id_interno} | File: {pdf_path}")
 
-        # 1. PARSING & CHUNKING (VISUAL ENRICHMENT)
-        # Now expecting a tuple: (chunks, visual_metadata)
+        # ---------------------------------------------------------
+        # PASO 0: VISIÓN COMPUTACIONAL (Florence-2)
+        # ---------------------------------------------------------
+        print(" Ejecutando análisis visual (Florence-2)...")
+        visual_metadata = {}
+        contexto_visual_global = ""
+        
         try:
-            chunks, visual_metadata = self.pdf_parser.process(pdf_path, use_vision=True)
+            doc = fitz.open(pdf_path)
+            # Procesamos todas las páginas
+            for page_num, page in enumerate(doc):
+                try:
+                    pix = page.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("png")
+                    
+                    # CORRECCIÓN DE VISIÓN: Convertir a RGB siempre
+                    # Esto arregla el error: 'NoneType' object has no attribute 'shape'
+                    image = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    
+                    # Llamada a la GPU
+                    descripcion = analizar_imagen_con_florence(image)
+                    
+                    # Guardar
+                    page_key = f"page_{page_num + 1}"
+                    visual_metadata[page_key] = descripcion
+                    contexto_visual_global += f"[Página {page_num+1} Análisis Visual]: {descripcion}\n"
+                    
+                except Exception as e_vision:
+                    print(f"  Error visión en página {page_num}: {e_vision}")
+            
+            doc.close()
+            print(f"  Análisis visual completado en {len(visual_metadata)} páginas.")
+            
         except Exception as e:
-            # Fallback for old signature or error
-            print(f"Vision Pipeline Warning: {e}. Falling back to standard parse.")
-            try:
-                # If process() returned just chunks in a previous version or failure mode
-                res = self.pdf_parser.process(pdf_path, use_vision=False)
-                if isinstance(res, tuple):
-                    chunks, visual_metadata = res
-                else:
-                    chunks = res
-                    visual_metadata = {}
-            except Exception as e2:
-                 raise ValueError(f"CRITICAL: Failed to parse PDF: {e2}")
+            print(f"Error crítico abriendo PDF para visión: {e}")
+
+        # ---------------------------------------------------------
+        # PASO 1: PARSING DE TEXTO
+        # ---------------------------------------------------------
+        chunks = self.parser.process(pdf_path, use_vision=False)
+        if isinstance(chunks, tuple): chunks = chunks[0]
 
         if not chunks:
-            raise ValueError(f" No text extracted from {pdf_path}")
-        print(f"📄 Extracted {len(chunks)} semantic sections.")
+            raise ValueError(f"No text extracted from {pdf_path}")
+        print(f" Extracted {len(chunks)} text chunks.")
         
-        # 2. GLOBAL METADATA INFERENCE (Taxonomy)
-        summary_text = " ".join([c['text'] for c in chunks[:3]])[:3000]
-        taxonomy = self._infer_taxonomy_llm(summary_text)
-        print(f"🏷️ Taxonomy Detected: {taxonomy.familia_principal}")
+        # ---------------------------------------------------------
+        # PASO 2: TAXONOMÍA GLOBAL (Gemini + Visión)
+        # ---------------------------------------------------------
+        resumen_texto = " ".join([c.get('text', '') for c in chunks[:10]])[:3000]
+        contexto_total = f"RESUMEN VISUAL:\n{contexto_visual_global[:1500]}\n\nTEXTO INICIAL:\n{resumen_texto}"
         
+        taxonomy = self._infer_taxonomy_gemini(contexto_total)
+        print(f" Taxonomy: {taxonomy.get('familia_principal', 'Unknown')}")
+        
+        # ---------------------------------------------------------
+        # PASO 3: GUARDADO EN BASE DE DATOS
+        # ---------------------------------------------------------
         conn = get_db_connection()
         try:
             cur = conn.cursor()
             
-            # --- A. LEVEL 1: TENDER REGISTRY (Upsert) ---
+            # A. INSERT LICITACION
             cur.execute("""
-                INSERT INTO registro_licitaciones (codigo_proceso, entidad_estatal, estado_actual, metadata_global)
+                INSERT INTO registro_licitaciones (codigo_proceso, entidad, estado_actual, metadata_global)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (codigo_proceso) DO UPDATE 
                 SET estado_actual = 'PROCESANDO',
@@ -70,135 +114,139 @@ class TenderPipeline:
                 RETURNING id;
             """, (
                 lic_id_interno, 
-                "Empresa Privada", # Placeholder if unknown
+                "Entidad Pendiente", 
                 "PROCESANDO", 
-                json.dumps(taxonomy.model_dump())
+                json.dumps(taxonomy)
             ))
             lic_db_id = cur.fetchone()[0]
 
-            # --- B. LEVEL 2: PDF REGISTRY ---
-            # Save visual metadata here
+            # B. INSERT PDF
             file_meta = {
                 "size_bytes": os.path.getsize(pdf_path), 
                 "page_count_est": len(chunks),
-                "visual_content": visual_metadata # Florence-2 results
+                "visual_content": visual_metadata 
             }
             
             cur.execute("""
                 INSERT INTO registro_pdfs (licitacion_id, nombre_archivo, ruta_almacenamiento, metadata_archivo)
                 VALUES (%s, %s, %s, %s)
                 RETURNING id;
-            """, (
-                lic_db_id, 
-                os.path.basename(pdf_path), 
-                pdf_path, 
-                json.dumps(file_meta)
-            ))
+            """, (lic_db_id, os.path.basename(pdf_path), pdf_path, json.dumps(file_meta)))
             pdf_db_id = cur.fetchone()[0]
 
-            # --- C. LEVEL 3 & 4: SECTIONS & NODES ---
+            # C. SECCIONES & VECTORES
             for chunk in chunks:
-                cat = chunk['category']
-                title = chunk['title']
-                text = chunk['text']
+                cat = chunk.get('category', 'GENERAL')
+                page_num = chunk.get('page', 1)
+                title = chunk.get('title', f"Página {page_num}")
+                text = chunk.get('text', '')
 
-                # 3.1 Insert Section (Context Container)
+                # Insertar Sección
                 cur.execute("""
                     INSERT INTO secciones_documento (pdf_id, titulo_detectado, categoria_seccion, metadata_extracted)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id;
-                """, (
-                    pdf_db_id, title, cat, json.dumps({}) # Updated later
-                ))
+                    VALUES (%s, %s, %s, %s) RETURNING id;
+                """, (pdf_db_id, title, cat, '{}'))
                 sec_id = cur.fetchone()[0]
 
-                # 3.2 Create "Raw Text" Node (For Semantic Search)
+                # Vectorizar Texto
                 text_vec = self.embedder.encode(text[:800]).tolist()
                 cur.execute("""
                     INSERT INTO nodos_vectorizados (seccion_id, tipo_nodo, contenido_texto, embedding_vec)
                     VALUES (%s, 'CHUNK_TEXTO', %s, %s)
                 """, (sec_id, text, text_vec))
 
-                # 3.3 Intelligent Extraction (For relevant sections)
+                # Extraer Requisitos
                 if cat in ["FINANCIERO", "JURIDICO", "EXPERIENCIA", "TECNICO"]:
-                    extracted = self._extract_requirements_llm(text, cat)
+                    info_visual_pagina = visual_metadata.get(f"page_{page_num}", "")
+                    extracted = self._extract_requirements_gemini(text, cat, info_visual_pagina)
                     
                     if extracted:
-                        # Update Section Metadata (JSONB)
-                        cur.execute("""
-                            UPDATE secciones_documento 
-                            SET metadata_extracted = %s 
-                            WHERE id = %s
-                        """, (json.dumps(extracted.model_dump()), sec_id))
-
-                        # 3.4 Create "Atom" Nodes (For Graph Logic)
-                        for item in extracted.juridico:
-                            self._insert_node(cur, sec_id, 'REQUISITO_JURIDICO', item)
+                        cur.execute("UPDATE secciones_documento SET metadata_extracted = %s WHERE id = %s", 
+                                    (json.dumps(extracted), sec_id))
                         
-                        for item in extracted.financiero:
-                            self._insert_node(cur, sec_id, 'REQUISITO_FINANCIERO', item)
-                            
-                        if extracted.experiencia and extracted.experiencia.filtros:
-                            for item in extracted.experiencia.filtros:
+                        for key in ['juridico', 'financiero']:
+                            for item in extracted.get(key, []):
+                                self._insert_node(cur, sec_id, f'REQUISITO_{key.upper()}', item)
+                        
+                        exp = extracted.get('experiencia', {})
+                        if exp and 'filtros' in exp:
+                            for item in exp['filtros']:
                                 self._insert_node(cur, sec_id, 'REQUISITO_EXPERIENCIA', item)
 
-            # --- D. FINALIZE ---
             cur.execute("UPDATE registro_licitaciones SET estado_actual = 'INDEXADO' WHERE id = %s", (lic_db_id,))
             conn.commit()
-            print(f"Tender {lic_id_interno} fully indexed.")
             return {"status": "success", "licitacion_id": lic_db_id}
 
         except Exception as e:
             conn.rollback()
-            print(f"DB Pipeline Error: {e}")
+            print(f"Error DB Transaction: {e}")
             raise e
         finally:
             conn.close()
 
-    # --- HELPER: Node Insertion ---
-    def _insert_node(self, cur, sec_id, node_type, item_obj):
-        """Helper to vectorize a concept and insert it as a Graph Node"""
-        # Vectorize the concept name (e.g., "Liquidity Index")
-        vec = self.embedder.encode(item_obj.concepto).tolist()
-        
+    def _insert_node(self, cur, sec_id, node_type, item_dict):
+        concept = item_dict.get('concepto', 'N/A')
+        if not concept: concept = "Indefinido"
+        vec = self.embedder.encode(str(concept)[:500]).tolist()
         cur.execute("""
-            INSERT INTO nodos_vectorizados 
-            (seccion_id, tipo_nodo, contenido_texto, metadata_nodo, embedding_vec)
+            INSERT INTO nodos_vectorizados (seccion_id, tipo_nodo, contenido_texto, metadata_nodo, embedding_vec)
             VALUES (%s, %s, %s, %s, %s)
-        """, (
-            sec_id, 
-            node_type, 
-            item_obj.concepto, # The 'Name' of the node
-            json.dumps(item_obj.model_dump()), # The 'Properties' of the node
-            vec # The 'Position' in latent space
-        ))
+        """, (sec_id, node_type, concept, json.dumps(item_dict), vec))
 
-    # --- LLM WRAPPERS ---
-    def _infer_taxonomy_llm(self, text):
+
+
+    # ---------------------------------------------------------
+    # MÉTODOS GEMINI (MODO COMPATIBILIDAD V1)
+    # ---------------------------------------------------------
+    def _infer_taxonomy_gemini(self, text):
+        if not self.client: return {"familia_principal": "No API Key"}
+        
+        # Pedimos JSON explícitamente en el prompt
+        prompt = f"""
+        Actúa como experto en licitaciones. Analiza:
+        {text[:4000]}
+        
+        Responde SOLO JSON válido (sin markdown):
+        {{ "familia_principal": "Nombre", "codigos_sugeridos": ["123"], "confianza": 0.9 }}
+        """
         try:
-            return self.client.beta.chat.completions.parse(
-                model="gpt-4o-2024-08-06",
-                messages=[{"role": "system", "content": "Infiere códigos UNSPSC."}, {"role": "user", "content": text}],
-                response_format=TaxonomyPrediction
-            ).choices[0].message.parsed
+            # CORRECCIÓN: Sin 'config'. Esto evita el error 400.
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+            # Limpieza manual
+            txt = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(txt)
         except Exception as e:
-            print(f"Taxonomy Error: {e}")
-            return TaxonomyPrediction(codigos_sugeridos=[], familia_principal="Desconocido", confianza=0)
+            print(f"Gemini Tax Error: {e}")
+            return {"familia_principal": "Error IA"}
 
-    def _extract_requirements_llm(self, text, category):
+    def _extract_requirements_gemini(self, text, category, visual_context=""):
+        if not self.client: return {}
+
+        prompt = f"""
+        Extrae requisitos {category}. 
+        Contexto Visual: {visual_context}
+        Texto: {text}
+        
+        Responde SOLO JSON válido (sin markdown):
+        {{
+            "juridico": [], "financiero": [], "experiencia": {{ "filtros": [] }}
+        }}
+        """
         try:
-            return self.client.beta.chat.completions.parse(
-                model="gpt-4o-2024-08-06",
-                messages=[
-                    {"role": "system", "content": f"Extrae requisitos {category} habilitantes."},
-                    {"role": "user", "content": text}
-                ],
-                response_format=LicitacionHabilitantes
-            ).choices[0].message.parsed
-        except Exception:
-            return None
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+            txt = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(txt)
+        except Exception as e:
+            print(f"Gemini Ext Error: {e}")
+            return {}
 
 if __name__ == "__main__":
     if os.path.exists("test.pdf"):
         pipeline = TenderPipeline()
-        pipeline.process_pdf("test.pdf", "TEST-PIPELINE-001")
+        pipeline.process_pdf("test.pdf", "TEST001")

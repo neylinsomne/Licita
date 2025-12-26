@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import SAGEConv, to_hetero
-
+import torch_geometric.transforms as T  # <--- AGREGA ESTA LÍNEA
 # ==========================================
 # 1. CONSTRUCTOR DE GRAFOS (Raw Data -> HeteroData)
 # ==========================================
@@ -80,6 +80,8 @@ def build_graph_for_inference(chunks_data, embedder):
     else:
         data['chunk', 'menciona', 'concepto'].edge_index = torch.empty((2, 0), dtype=torch.long)
 
+    data = T.ToUndirected()(data)  # <--- AGREGA ESTO
+    
     return data
 
 # ==========================================

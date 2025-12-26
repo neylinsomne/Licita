@@ -2,8 +2,7 @@ services:
   db:
     image: pgvector/pgvector:pg16
     container_name: licitaciones_db
-    env_file:
-      - .env
+    env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -13,37 +12,71 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/ddl.sql:/docker-entrypoint-initdb.d/ddl.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   pgadmin:
     image: dpage/pgadmin4
     container_name: licitaciones_pgadmin
-    env_file:
-      - .env
+    env_file: .env
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
     ports:
       - "${PGADMIN_PORT}:80"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   api:
-    build: .
-    container_name: licitaciones_api
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: licitaciones_core_gpu
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/api --reload-dir /app/main.py
     ports:
       - "8000:8000"
     volumes:
+      - ./test.pdf:/app/test.pdf
       - .:/app
+      - ./data_models:/hf_cache
+      - /app/data_models
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     env_file:
       - .env
     environment:
+      # ... tus otras variables ...
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      DB_HOST: db
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      DB_HOST: db
+      HF_HOME: /hf_cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
+  frontend:
+    build: ./frontend
+    container_name: licitaciones_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
 
 volumes:
   postgres_data:
+  model_cache:
